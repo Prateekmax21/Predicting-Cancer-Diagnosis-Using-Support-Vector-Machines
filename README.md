@@ -83,6 +83,3 @@ Three SVM models were built and compared:
 ## Author
 - Prateek Pagare
 
----
-
-*Note: No ROC curves were included in this version.*
