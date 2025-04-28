@@ -1,0 +1,250 @@
+---
+title: "ML_Project_2"
+output: html_document
+date: "2025-04-26"
+author: "Prateek Pagare"
+---
+### Predicting Cancer Diagnosis Using Support Vector Machines on  National Health Interview Survey and was accessed through IPUMS Health Survey DATA set.
+
+We first load the NHIS dataset and libraries and take a look at its structure, summary, and the first few rows.
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(e1071)
+library(caret)
+library(ggplot2)
+```
+
+
+```{r}
+nhis_data <- read.csv("nhis_2022.csv")
+str(nhis_data)
+summary(nhis_data)
+head(nhis_data)
+```
+The dataset includes many health, demographic, and behavioral variables. A basic check shows everything loaded correctly, and we can proceed to data cleaning and selection.
+
+
+In this project, I first carefully cleaned the NHIS dataset by removing missing or unknown values for key variables (cancer diagnosis, sex, BMI, alcohol days, age, and poverty ratio). After spending over 12–14 hours deeply exploring and analyzing the data, I realized that working with the full population introduced a lot of noise and imbalance.\
+To improve model performance and uncover stronger patterns, I decided to subset the data and focus on a more meaningful group:\
+
+- Individuals older than 45 years (AGE>45)\
+
+- Those who were married (spouse present) (MARSTCUR ==1)\
+
+- People who reported drinking alcohol on more than 50 days per year (ALCDAYSYR > 50 days) \
+```{r}
+# Clean and prepare data
+nhis_data_clean <- nhis_data %>%
+  mutate(
+    CANCEREV = ifelse(CANCEREV %in% c(0, 7, 8, 9), NA, CANCEREV),
+    CANCEREV = factor(CANCEREV, levels = c(1, 2), labels = c("No", "Yes")),
+    SEX = ifelse(SEX %in% c(7, 8, 9), NA, SEX),
+    SEX = factor(SEX, levels = c(1, 2), labels = c("Male", "Female")),
+    BMICALC = ifelse(BMICALC == 996, NA, BMICALC),
+    ALCDAYSYR = ifelse(ALCDAYSYR %in% c(995, 996, 997, 998, 999), NA, ALCDAYSYR),
+    AGE = ifelse(AGE %in% c(997, 998, 999), NA, AGE),
+    POVERTY = ifelse(POVERTY %in% c(98, 99), NA, POVERTY)
+  ) %>%
+  filter(!is.na(CANCEREV) & !is.na(SEX) & !is.na(BMICALC) &!is.na(ALCDAYSYR) & !is.na(AGE) & !is.na(POVERTY)) %>%
+  filter(AGE > 45) %>%
+  filter(MARSTCUR == 1) %>%
+  filter(ALCDAYSYR > 50)
+# Check the cleaned dataset
+dim(nhis_data_clean)
+table(nhis_data_clean$CANCEREV)
+table(nhis_data_clean$SEX)
+summary(nhis_data_clean$BMICALC)
+summary(nhis_data_clean$ALCDAYSYR)
+summary(nhis_data_clean$AGE)
+summary(nhis_data_clean$POVERTY)
+```
+After cleaning and subsetting, the final dataset contains 2,741 individuals. Out of these, 545 individuals reported having been diagnosed with cancer, while 2,196 individuals did not.\
+The data includes a balanced mix of males and females.\
+
+- The BMI values mostly range between 24 and 30, indicating a generally overweight group.\
+
+- Alcohol consumption is relatively high (median of 156 drinking days per year).\
+
+- Age centers around a median of 64 years, with a range from 46 to 85 years old.\
+
+- Most participants have a poverty ratio close to or above the federal threshold.\
+
+
+
+
+After cleaning the dataset and selecting adults over 45 years old who are married and have a history of drinking alcohol more than 50 days per year, here I explored the distribution of alcohol, age, and sex between cancer and non-cancer groups.
+```{r}
+
+# Boxplot: Frequency drank alcohol in past year vs Cancer
+ggplot(nhis_data_clean, aes(x = CANCEREV, y = ALCDAYSYR, fill = CANCEREV)) +
+  geom_boxplot() +
+  labs(title = "Alcohol days past year vs Cancer",x = "Cancer  (Yes/No)",y = "Alc. past year") +
+  theme_minimal() +theme(legend.position = "none")
+
+# Boxplot: Age vs Cancer
+ggplot(nhis_data_clean, aes(x = CANCEREV, y = AGE, fill = CANCEREV)) +
+  geom_boxplot() +
+  labs(title = "Age vs Cancer ",x = "Cancer  (Yes/No)",y = "Age") +
+  theme_minimal() +theme(legend.position = "none")
+
+# Barplot: Sex vs Cancer
+ggplot(nhis_data_clean, aes(x = SEX, fill = CANCEREV)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Sex vs Cancer ",x = "Sex", y = "Count",fill = "Cancer ") +
+  theme_minimal()
+
+```
+- The first boxplot compares alcohol consumption days between people with and without cancer. The spread is wide, but individuals who had cancer seemed to show slightly higher alcohol consumption \
+
+- The second boxplot shows that people diagnosed with cancer tend to be older than those without cancer. This matches common biological understanding where cancer risk increases with age. \
+
+- The bar plot shows the counts of males and females with and without cancer, there are slightly more males than females among those diagnosed \
+
+
+
+I randomly split the cleaned and subsetted dataset into training and testing sets. About 70% of the data was assigned to training and 30% to testing, while maintaining the distribution of cancer diagnosis outcomes across both sets.
+```{r}
+set.seed(123)
+
+train_index <- sample(1:nrow(nhis_data_clean), 0.7 * nrow(nhis_data_clean))
+nhis_train <- nhis_data_clean[train_index, ]
+nhis_test <- nhis_data_clean[-train_index, ]
+dim(nhis_train)
+dim(nhis_test)
+table(nhis_train$CANCEREV)
+table(nhis_test$CANCEREV)
+```
+The training set contains 1,918 observations, and the testing set contains 823 observations.
+Within the training data, 1,529 people had no history of cancer and 389 had a history of cancer.
+The testing set has 667 people without cancer and 156 people with cancer. \
+
+
+
+
+## Model 1 - Linear SVM
+I chose to use the same 5 predictor variables (Age, Sex, Poverty, BMI, and Alcohol Consumption) across all three SVM models (Linear, Radial, and Polynomial) for consistency and easier comparison.,\
+I fit a linear SVM model using all five predictors: age, sex, poverty ratio, BMI, and alcohol consumption days. I used a higher cost value (500) to penalize misclassifications more heavily, hoping to get a stricter decision boundary.\
+
+```{r}
+svm_linear_model <- svm(CANCEREV ~ AGE + SEX + POVERTY + BMICALC + ALCDAYSYR, data = nhis_train,kernel = "linear",cost = 10,scale = TRUE)
+linear_predictions <- predict(svm_linear_model, newdata = nhis_test)
+linear_conf_matrix <- table(Predicted = linear_predictions, Actual = nhis_test$CANCEREV)
+linear_conf_matrix
+confusionMatrix(linear_predictions, nhis_test$CANCEREV, positive = "Yes")
+summary(svm_linear_model)
+plot(svm_linear_model,nhis_data_clean, AGE ~ BMICALC)
+```
+The model achieved about 81% accuracy on the test data,However, the confusion matrix show, predicting all individuals as "No" for cancer and never predicting "Yes" and The plot shows that there is no clear straight-line separation between cancer and non-cancer groups, which makes sense because health outcomes like cancer are influenced by many complex, overlapping factors \
+
+
+
+
+
+tune the linear model on different cost
+```{r}
+set.seed(123)
+tune_linear <- tune(svm, CANCEREV ~ AGE + SEX + POVERTY + BMICALC + ALCDAYSYR, data = nhis_train,
+kernel = "linear",ranges = list(cost = c(0.01, 0.1, 1, 5, 10,100)))
+summary(tune_linear)
+best_linear_model <- tune_linear$best.model
+best_pred_linear <- predict(best_linear_model, newdata = nhis_test)
+a <- confusionMatrix(best_pred_linear, nhis_test$CANCEREV, positive = "Yes")
+fourfoldplot(a$table, color = c("#FC8D62", "#66C2A5"),conf.level = 0, margin = 1,main = "Confusion Matrix: Linear SVM") # reference https://www.rdocumentation.org/packages/graphics/versions/3.6.2/topics/fourfoldplot
+```
+I performed cost parameter tuning for the linear SVM model using 10-fold cross-validation. After trying multiple values , the tuning showed that all cost values resulted in the same best performance of around 20% error . This suggests that in my subsetted dataset, adjusting the cost parameter did not lead to a significant improvement. The confusion matrix also remained the same as before tuning, indicating that the model still struggles to correctly predict positive cancer cases (predicting almost all samples as "No" for cancer). \
+
+
+
+## Model 2 - Radial SVM
+
+so in this model I am taking only three predictors (AGE, POVERTY, and ALCDAYSYR)
+```{r}
+nhis_svm_radial <- svm(CANCEREV ~ AGE + POVERTY + ALCDAYSYR,data = nhis_train,type = "C-classification",kernel = "radial",gamma = 1,cost = 1000)
+summary(nhis_svm_radial)
+nhis_pred_radial <- predict(nhis_svm_radial, newdata = nhis_test)
+nhis_conf_matrix_radial <- confusionMatrix(nhis_pred_radial, nhis_test$CANCEREV)
+nhis_conf_matrix_radial
+plot(nhis_svm_radial,nhis_data_clean, POVERTY ~ AGE)
+```
+I found that reducing the number of variables made the decision boundary clearer for visualization without losing too much information. The radial model achieved an accuracy of 78.6% on the test set. From the confusion matrix, the model predicted the "No Cancer" class fairly well but struggled with detecting the "Yes Cancer" class. This can be seen by the low specificity (11.5%), meaning the model misclassifies many "Yes" cases as "No."and plot shows non-linear separations based on AGE and POVERTY, although some overlapping still occurs.\
+
+
+
+
+tune of radial svm:
+```{r}
+set.seed(1235)
+nhis_tune_radial <- tune(svm, CANCEREV ~ AGE + POVERTY + ALCDAYSYR,data = nhis_train,kernel = "radial",ranges = list( cost = c(0.1, 1, 10, 100, 1000),
+      gamma = c(0.5, 1, 2, 3)))
+summary(nhis_tune_radial)
+nhis_best_radial <- nhis_tune_radial$best.model
+nhis_best_radial_pred <- predict(nhis_best_radial, nhis_test)
+nhis_best_radial_conf <- confusionMatrix(nhis_best_radial_pred, nhis_test$CANCEREV)
+nhis_best_radial_conf
+```
+After tuning, the best radial SVM model selected a cost of 0.1 and gamma of 0.5 based on the lowest cross-validation error (0.2028).However, even after tuning, the test set confusion matrix showed that the model predicted all cases as "No" for cancer history.The test accuracy remained 81.04%, This suggests that although tuning adjusted model flexibility, the real issue was the strong class imbalance and overlapping predictor, Thus, simply tuning the cost and gamma could not fix the imbalance in this dataset.\
+
+
+
+
+## Model 3 - Polynomial SVM
+
+ fitted an initial Polynomial SVM model using degree 3 and a high cost (10,000) to allow complex decision boundaries. I used five predictors \
+```{r}
+svm_poly_initial <- svm(CANCEREV ~ AGE + SEX + POVERTY + BMICALC + ALCDAYSYR,data = nhis_train,type = "C-classification", kernel = "polynomial",coef0 = 2,degree = 3,  cost = 10000)
+pred_poly_initial <- predict(svm_poly_initial, newdata = nhis_test)
+conf_matrix_poly_initial <- confusionMatrix(pred_poly_initial, nhis_test$CANCEREV)
+conf_matrix_poly_initial
+plot(svm_poly_initial,nhis_data_clean, AGE ~ BMICALC)
+```
+The initial Polynomial SVM model showed decent overall accuracy (~80%), but very poor ability to correctly identify positive cancer cases. The model strongly favored predicting "No" outcomes and was unable to separate classes well, as seen in the cartoon plot, confusion matrix, the Polynomial SVM model correctly classified 663 individuals without cancer and only 1 individual with cancer. However, it misclassified 155 individuals who actually had cancer and 4 individuals who did not have cancer. This imbalance suggests that while the model was good at identifying the "No" cases, it performed very poorly for the "Yes" cases.
+
+
+
+
+
+```{r}
+set.seed(1234)
+nhis_tune_poly <- tune(svm, CANCEREV ~ AGE + SEX + POVERTY + BMICALC + ALCDAYSYR,data = nhis_train,kernel = "polynomial",ranges = list(cost = c(0.01, 0.1, 1, 10, 100),degree = c(2, 3, 4)))
+
+summary(nhis_tune_poly)
+nhis_best_poly <- nhis_tune_poly$best.model
+nhis_best_poly_pred <- predict(nhis_best_poly, newdata = nhis_test)
+nhis_best_poly_conf <- confusionMatrix(nhis_best_poly_pred, nhis_test$CANCEREV)
+nhis_best_poly_conf
+```
+After tuning, the best Polynomial SVM model used a degree of 2 and a cost of 0.01. However, the tuned model still showed similar performance to the untuned one, with an overall accuracy of about 81%. The model predicted "No" for nearly all cases, resulting in a very high sensitivity (1.0) but very poor specificity (0.0). This suggests that tuning did not significantly improve classification of the "Yes" (cancer) cases, likely due to imbalance and overlap in the predictors.Even after tuning, the model struggled because the data had a lot of overlap between cancer and non-cancer cases.
+
+
+
+
+
+
+
+
+
+combied results of all 3 models
+```{r}
+final_results <- data.frame(
+  Model = c("Linear SVM", "Radial SVM", "Polynomial SVM"),
+  Accuracy = c(0.810, 0.786, 0.807),
+  Sensitivity = c(1.000, 0.943, 0.994),
+  Specificity = c(0.000, 0.115, 0.006)
+)
+final_results
+
+```
+Based on these results, none of the models performed particularly well at detecting "Yes" (cancer) cases. However, the Radial SVM showed the best balanced accuracy among all three models and might be preferred if detecting cancer cases was a critical goal, Improving the detection of "Yes" cases would likely require additional variables, better feature engineering, or methods specifically designed to handle imbalanced datasets, such as SMOTE but I didnt use because this is real world data and we cannot do changes on our own.\
+
+
+### Conclusion
+
+In this analysis, age, poverty ratio, and the frequency of alcohol use stood out as the most important predictors of whether someone reported a cancer diagnosis. The SVM decision boundary plots showed that older adults and those with higher income levels (reflected by a lower poverty ratio) tended to have different risk profiles compared to younger or lower-income individuals. BMI also showed some differences between groups, but it was not as strong a separator on its own.\
+
+The SVM visualizations made it clear that no single lifestyle factor or measurement could fully separate people with a cancer history from those without. This suggests that cancer risk is shaped by a complex mix of behaviors, health metrics, and demographic factors. The strong influence of age and poverty ratio matches what we know from public health: older age increases disease risk, and financial resources can affect access to healthcare and preventive services.\
+
+Given these findings, I would recommend that policymakers focus on broad strategies-such as universal screening, health education, and making preventive care accessible to all older adults-rather than targeting only specific income or lifestyle groups. Since no single factor perfectly predicts cancer risk, improving early detection and prevention for everyone in higher-risk age groups is likely to be more effective than narrowing efforts to just a few high-risk subgroups.\
+
+
+
